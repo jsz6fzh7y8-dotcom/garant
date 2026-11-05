@@ -155,7 +155,7 @@ const garantSupabase = window.supabase.createClient(GARANT_SUPABASE_URL, GARANT_
 </script>
 <script>
 /* Реальный режим: сделки, чат и виртуальный баланс через Supabase (токен 'sb'). Демо-режим остаётся на локальной имитации. */
-window.PAY_DETAILS='ТЕСТОВЫЕ РЕКВИЗИТЫ\nКарта: 0000 0000 0000 0000\nПолучатель: Гарант (демо)\nВиртуальные деньги: реальный перевод не нужен.';
+window.PAY_DETAILS='Для пополнения баланса напишите нам в Telegram: @tonuky';
 window.realHandle=async function(method,url,body){
  const sb=garantSupabase,b=body||{};
  const FAIL=(msg,field)=>[400,{error:msg,field}];
@@ -173,7 +173,7 @@ window.realHandle=async function(method,url,body){
    const uids=new Set([me]);deals.forEach(d=>[d.buyer_id,d.seller_id,d.creator_id].forEach(x=>x&&uids.add(x)));
    const [rp,wl,tx,rq,pu,ev]=await Promise.all([
     sb.from('profiles').select('id,username,created_at').in('id',[...uids]),
-    sb.from('wallets').select('balance').eq('user_id',me).maybeSingle(),
+    sb.from('wallets').select('currency,balance').eq('user_id',me),
     sb.from('transactions').select('*').order('created_at',{ascending:false}),
     sb.from('payment_requests').select('*').order('created_at',{ascending:false}),
     sb.from('promo_uses').select('code'),
@@ -182,9 +182,11 @@ window.realHandle=async function(method,url,body){
    const pm={};(rp.data||[]).forEach(p=>pm[p.id]=p);
    const myName=(pm[me]&&pm[me].username)||(user.user_metadata&&user.user_metadata.name)||String(user.email).split('@')[0];
    if(!pm[me]){try{await sb.from('profiles').insert({id:me,username:myName})}catch(e){}}
-   const bal=wl&&wl.data?Number(wl.data.balance):0;
+   const wrows=wl&&wl.data||[];
+   const balances=wrows.map(r=>({currency:r.currency||'RUB',amount:Number(r.balance)}));
+   const bal=(balances.find(x=>x.currency=='RUB')||{amount:0}).amount;
    const users=[...uids].map(id=>id===me
-    ?{id,name:myName,avatarUrl:'',rating:null,email:user.email,balance:bal,createdAt:(pm[me]&&pm[me].created_at)||user.created_at,usedPromoCodes:(pu.data||[]).map(x=>x.code)}
+    ?{id,name:myName,avatarUrl:'',rating:null,email:user.email,balance:bal,balances,createdAt:(pm[me]&&pm[me].created_at)||user.created_at,usedPromoCodes:(pu.data||[]).map(x=>x.code)}
     :{id,name:(pm[id]&&pm[id].username)||'Пользователь',avatarUrl:'',rating:null});
    const evs=ev.data||[];
    const dd=deals.map(d=>{
@@ -195,17 +197,17 @@ window.realHandle=async function(method,url,body){
     if(d.buyer_id&&d.seller_id)h.push({id:'j-'+d.id,at:d.created_at,actorId:other,type:'joined',message:'Второй участник присоединился'});
     mine.forEach(e=>h.push({id:e.id,at:e.created_at,actorId:e.actor_id||null,type:e.type,message:e.message}));
     if(d.status==='cancelled'&&!mine.some(e=>e.type==='cancelled'))h.push({id:'x-'+d.id,at:d.created_at,actorId:cid,type:'cancelled',message:'Сделка отменена'});
-    return{id:d.id,short:sh(d.id),invite:d.invite_code,title:d.title,description:d.description,amount:Number(d.amount),currency:d.currency||'RUB',fee:d.fee==null?undefined:Number(d.fee),
+    return{id:d.id,short:sh(d.id),invite:d.invite_code,title:d.title,description:d.description,amount:Number(d.amount),currency:(d.currency||'RUB').toUpperCase(),fee:d.fee==null?undefined:Number(d.fee),
      creatorId:cid,creatorRole:crole,sellerId:d.seller_id||undefined,buyerId:d.buyer_id||undefined,status:d.status,createdAt:d.created_at,updatedAt:d.created_at,history:h,
      chat:msgs.filter(x=>x.deal_id===d.id).map(x=>({id:x.id,at:x.created_at,userId:x.sender_id,text:x.body})),reviews:[]};
    });
-   const txs=(tx.data||[]).map(t=>({id:t.id,userId:me,type:t.type,amount:Number(t.amount),dealId:t.deal_id||null,dealShort:t.deal_id?sh(t.deal_id):null,createdAt:t.created_at,note:t.note}));
-   const reqs=(rq.data||[]).map(r=>({id:r.id,short:(r.type==='deposit'?'D-':'W-')+String(r.id).slice(0,5).toUpperCase(),userId:me,type:r.type,amount:Number(r.amount),status:r.status,code:r.code,requisites:r.requisites,createdAt:r.created_at}));
+   const txs=(tx.data||[]).map(t=>({id:t.id,userId:me,type:t.type,amount:Number(t.amount),currency:t.currency||'RUB',dealId:t.deal_id||null,dealShort:t.deal_id?sh(t.deal_id):null,createdAt:t.created_at,note:t.note}));
+   const reqs=(rq.data||[]).map(r=>({id:r.id,short:(r.type==='deposit'?'D-':'W-')+String(r.id).slice(0,5).toUpperCase(),userId:me,type:r.type,amount:Number(r.amount),currency:r.currency||'RUB',status:r.status,code:r.code,requisites:r.requisites,createdAt:r.created_at}));
    return[200,{me,users,deals:dd,tx:txs,requests:reqs,payDetails:window.PAY_DETAILS,demo:false,fee:3,notes:[]}];
   }
   if(method==='POST'&&url==='/api/deals'){
    const a=parseFloat(b.amount);
-   const r=await rpc('create_deal',{p_title:String(b.title||''),p_description:String(b.description||''),p_amount:isFinite(a)?a:null,p_role:b.role||null});
+   const r=await rpc('create_deal',{p_title:String(b.title||''),p_description:String(b.description||''),p_amount:isFinite(a)?a:null,p_role:b.role||null,p_currency:String(b.currency||'RUB')});
    return[200,{id:r.id,msg:'Сделка создана'}];
   }
   if(method==='GET'&&(m=url.match(/^\/api\/deals\/([^/]+)\/preview$/))){
@@ -226,13 +228,13 @@ window.realHandle=async function(method,url,body){
    return FAIL('Отзывы подключим на следующем этапе');
   }
   if(method==='POST'&&url==='/api/deposit'){
-   const a=parseFloat(b.amount);const r=await rpc('request_deposit',{p_amount:isFinite(a)?a:null});return[200,{id:r.id,amount:Number(r.amount)}];
+   const a=parseFloat(b.amount);const r=await rpc('request_deposit',{p_amount:isFinite(a)?a:null,p_currency:String(b.currency||'RUB')});return[200,{id:r.id,amount:Number(r.amount),currency:r.currency}];
   }
   if(method==='POST'&&(m=url.match(/^\/api\/deposit\/([^/]+)\/paid$/))){
    await rpc('mark_deposit_paid',{p_id:m[1]});return[200,{msg:'Спасибо! Платёж проверяется, зачисление после подтверждения администратором'}];
   }
   if(method==='POST'&&url==='/api/withdraw'){
-   const a=parseFloat(b.amount);const r=await rpc('request_withdraw',{p_amount:isFinite(a)?a:null,p_requisites:String(b.requisites||'')});
+   const a=parseFloat(b.amount);const r=await rpc('request_withdraw',{p_amount:isFinite(a)?a:null,p_requisites:String(b.requisites||''),p_currency:String(b.currency||'RUB')});
    return[200,{id:r.id,amount:Number(r.amount),requisites:r.requisites}];
   }
   if(method==='POST'&&url==='/api/promo'){
@@ -240,8 +242,21 @@ window.realHandle=async function(method,url,body){
   }
   if(method==='POST'&&url==='/api/admin/requests'){return[200,await rpc('admin_list_requests')]}
   if(method==='POST'&&url==='/api/admin/request'){await rpc('admin_handle_request',{p_id:b.id,p_approve:b.action==='approve'});return[200,{ok:1}]}
+  if(method==='POST'&&url==='/api/admin/promo/list'){return[200,await rpc('admin_list_promos')]}
+  if(method==='POST'&&url==='/api/admin/promo/create'){
+   const c=String(b.code||'').trim(),a=Number(b.amount);
+   if(!c)return FAIL('Введите код','pcd');if(!(a>0))return FAIL('Сумма должна быть больше 0','pam');
+   await rpc('admin_create_promo',{p_code:c,p_amount:a});return[200,{ok:1}];
+  }
+  if(method==='POST'&&url==='/api/admin/promo/toggle'){await rpc('admin_toggle_promo',{p_code:String(b.code||''),p_active:!!b.active});return[200,{ok:1}]}
   if(method==='POST'&&url==='/api/admin/disputes'){return[200,await rpc('admin_list_disputes')]}
   if(method==='POST'&&url==='/api/admin/resolve'){await rpc('admin_resolve_dispute',{p_id:b.id,p_refund:b.action==='refund'});return[200,{ok:1}]}
+  if(method==='POST'&&url==='/api/support'){
+   const n=String(b.name||'').trim().slice(0,80),em=String(b.email||'').trim().slice(0,120),s=String(b.subject||'').trim().slice(0,150),ms=String(b.message||'').trim().slice(0,2000);
+   if(!n)return FAIL('Введите имя','sn');if(!/^\S+@\S+\.\S+$/.test(em))return FAIL('Некорректный email','se');if(!s)return FAIL('Укажите тему','ss');if(ms.length<5)return FAIL('Опишите вопрос подробнее','sm');
+   const r=await sb.from('support_tickets').insert({user_id:me,name:n,email:em,subject:s,message:ms});if(r.error)throw r.error;
+   return[200,{msg:'Заявка отправлена! Мы ответим на '+em+' в течение суток.'}];
+  }
   if(method==='POST'&&url==='/api/profile'){
    const n=String(b.name||'').trim().slice(0,60);if(!n)return FAIL('Введите имя','nm');
    const r=await sb.from('profiles').update({username:n}).eq('id',me);if(r.error)throw r.error;return[200,{ok:1}];
@@ -349,6 +364,9 @@ if(a=='dispute'){d.status='dispute';ev(d,u,'dispute','Открыт спор');ms
 save();return{msg}});
 R('POST','/api/notes/read-all',({u})=>{DB.notes.forEach(n=>{if(n.userId==u.id)n.read=true});save()});
 R('POST','/api/notes/:id/read',({u,p})=>{const n=DB.notes.find(x=>x.id==p[0]&&x.userId==u.id);if(n){n.read=true;save()}});
+R('POST','/api/support',({u,body:b})=>{const n=String(b.name||'').trim().slice(0,80),em=String(b.email||'').trim().slice(0,120),s=String(b.subject||'').trim().slice(0,150),ms=String(b.message||'').trim().slice(0,2000);
+if(!n)bad('Введите имя','sn');if(!/^\S+@\S+\.\S+$/.test(em))bad('Некорректный email','se');if(!s)bad('Укажите тему','ss');if(ms.length<5)bad('Опишите вопрос подробнее','sm');
+return{msg:'Заявка отправлена! Мы ответим на '+em+' в течение суток.'}});
 R('POST','/api/profile',({u,body:b})=>{const n=String(b.name||'').trim().slice(0,60);if(!n)bad('Введите имя','nm');const a=String(b.avatarUrl||'').trim();
 if(a&&!/^https?:\/\//.test(a))bad('Нужна ссылка http(s)','au');u.name=n;u.avatarUrl=a||undefined;save()});
 
@@ -372,7 +390,11 @@ async function pvw(id){const j=await api('GET','/deals/'+id+'/preview');DB.previ
 const ST={awaiting_participant:['Ждём участника','#6B7280'],awaiting_payment:['Ждёт оплаты','#D97706'],paid:['Оплачена','#2563EB'],in_progress:['В работе','#0EA5A4'],completed:['Завершена','#16A34A'],cancelled:['Отменена','#6B7280'],dispute:['Спор','#DC2626']};
 const TT={deposit:'Пополнение',withdraw:'Вывод',escrow_hold:'Заморозка в эскроу',escrow_release:'Выплата из эскроу',promo_bonus:'Промокод',refund:'Возврат'};
 const uid=()=>Math.random().toString(36).slice(2,10);
-const fmt=n=>Number(n).toLocaleString('ru-RU')+' ₽';
+const CUR={RUB:'₽',USD:'$',EUR:'€',UAH:'₴',KZT:'₸',BYN:'Br',CNY:'¥',TRY:'₺'};
+const CUR_LIST=['RUB','USD','EUR','UAH','KZT','BYN','CNY','TRY'];
+const fmt=(n,c)=>Number(n).toLocaleString('ru-RU')+' '+(CUR[c||'RUB']||c||'₽');
+const balOf=(u,c)=>{c=c||'RUB';const r=(u&&u.balances||[]).find(x=>x.currency==c);return r?r.amount:(c=='RUB'?(u&&u.balance||0):0)};
+const curSelect=(id,sel)=>`<select class=in id=${id}>${CUR_LIST.map(c=>`<option value=${c} ${c==(sel||'RUB')?'selected':''}>${c} — ${CUR[c]}</option>`).join('')}</select>`;
 const dt=s=>new Date(s).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'});
 const now=()=>new Date().toISOString();
 const me=()=>DB.users.find(u=>u.id===DB.me),usr=id=>DB.users.find(u=>u.id===id);
@@ -380,7 +402,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const badge=s=>`<span class=badge style="color:${ST[s][1]}">${ST[s][0]}</span>`;
 function toast(m,e){const t=document.createElement('div');t.className='toast'+(e?' err':'');t.textContent=m;$('#toasts').append(t);setTimeout(()=>t.remove(),3200)}
 let R=['home'],PEND=null,F={s:'',q:'',t:''},CB;
-const PRIV=['dashboard','new','join','deals','deal','balance','promo','notifs','profile'];
+const PRIV=['dashboard','new','join','deals','deal','balance','promo','notifs','profile','support'];
 let H=[];
 async function go(...r){if(JSON.stringify(r)!=JSON.stringify(R))H.push(R);R=r;closeM();if(r[0]=='join'&&TOK)await pvw(r[1]);render();scrollTo(0,0)}
 function back(){if(H.length){R=H.pop();closeM();render();scrollTo(0,0)}}
@@ -398,15 +420,16 @@ const mine=()=>DB.deals.filter(d=>d.sellerId==DB.me||d.buyerId==DB.me||d.creator
 const myTx=()=>DB.tx.filter(t=>t.userId==DB.me).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
 
 function hdr(){const u=me(),n=u?DB.notes.filter(x=>x.userId==u.id&&!x.read).length:0;
-const L=[['home','Главная'],['dashboard','Дашборд'],['deals','Сделки'],['balance','Баланс'],['promo','Промокод']];
+const L=[['home','Главная'],['dashboard','Дашборд'],['deals','Сделки'],['balance','Баланс'],['support','Поддержка']];
 return `<header><div class="wrap hd">${H.length?'<button class=bk onclick=back() title="Назад" aria-label="Назад">←</button>':''}<a class=logo onclick="go('home')">◆ Гарант</a><nav id=nv onclick="this.classList.remove('open')">${L.map(l=>`<a class="${R[0]==l[0]?'on':''}" onclick="go('${l[0]}')">${l[1]}</a>`).join('')}</nav><div class=sp></div>${u?`<span class=bal onclick="go('balance')">${fmt(u.balance)}</span><a class=bell onclick="go('notifs')">🔔${n?`<i>${n}</i>`:''}</a><a class=av title="Профиль" onclick="go('profile')">${av(u)}</a>`:`<a class="btn p" onclick="go('login')">Войти</a>`}<button class=bg onclick="$('#nv').classList.toggle('open')">☰</button></div></header>`}
 
 function render(){if(PRIV.includes(R[0])&&!me()){PEND=R[0]=='join'?R:null;R=['login']}
-const p=PG[R[0]]||PG.nf;$('#app').innerHTML=hdr()+`<main><div class=wrap>${p()}</div></main><footer><div class=wrap>© 2026 Гарант · эскроу-сервис · <small style="opacity:.6">Виртуальные деньги · тестовый режим</small> · <a onclick="go('rules')">Правила и FAQ</a> · <a onclick="go('admin')">Админ-панель (демо)</a></div></footer>`;save();if(R[0]=='admin')loadAdmin()}
+if(R[0]=='admin'&&me()&&!isAdmin())R=['nf'];
+const p=PG[R[0]]||PG.nf;$('#app').innerHTML=hdr()+`<main><div class=wrap>${p()}</div></main><footer><div class=wrap>© 2026 Гарант · эскроу-сервис · <a onclick="go('support')">Поддержка</a> · <a onclick="go('rules')">Правила и FAQ</a></div></footer>`;save();if(R[0]=='admin')loadAdmin()}
 
-const dealRow=d=>`<tr><td>${d.short||d.id}</td><td>${esc(d.title)}</td><td>${fmt(d.amount)}</td><td>${badge(d.status)}</td><td>${dt(d.createdAt)}</td><td><button class=btn onclick="go('deal','${d.id}')">Открыть</button></td></tr>`;
+const dealRow=d=>`<tr><td>${d.short||d.id}</td><td>${esc(d.title)}</td><td>${fmt(d.amount,d.currency)}</td><td>${badge(d.status)}</td><td>${dt(d.createdAt)}</td><td><button class=btn onclick="go('deal','${d.id}')">Открыть</button></td></tr>`;
 const dealTbl=l=>l.length?`<div class=tw><table><tr><th>ID</th><th>Название</th><th>Сумма</th><th>Статус</th><th>Дата</th><th></th></tr>${l.map(dealRow).join('')}</table></div>`:`<p class=m>Сделок пока нет.</p><button class="btn p" onclick="go('new')">Создать сделку</button>`;
-const txTbl=l=>l.length?`<div class=tw><table><tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Сделка</th><th>Примечание</th></tr>${l.map(t=>`<tr><td>${dt(t.createdAt)}</td><td>${TT[t.type]}</td><td class="${t.amount>0?'pos':'neg'}">${t.amount>0?'+':''}${fmt(t.amount)}</td><td>${t.dealId?`<a onclick="go('deal','${t.dealId}')">${t.dealShort||t.dealId}</a>`:'—'}</td><td>${esc(t.note||'')}</td></tr>`).join('')}</table></div>`:`<p class=m>Операций пока нет.</p>`;
+const txTbl=l=>l.length?`<div class=tw><table><tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Сделка</th><th>Примечание</th></tr>${l.map(t=>`<tr><td>${dt(t.createdAt)}</td><td>${TT[t.type]}</td><td class="${t.amount>0?'pos':'neg'}">${t.amount>0?'+':''}${fmt(t.amount,t.currency)}</td><td>${t.dealId?`<a onclick="go('deal','${t.dealId}')">${t.dealShort||t.dealId}</a>`:'—'}</td><td>${esc(t.note||'')}</td></tr>`).join('')}</table></div>`:`<p class=m>Операций пока нет.</p>`;
 
 const PG={
 home(){const u=me();return `<div class=hero><h1>Гарант для<br>ваших сделок</h1><p>Покупайте и продавайте с уверенностью. Деньги защищены эскроу до подтверждения получения.</p><div class=row style="justify-content:center"><button class="btn p" onclick="go('${u?'new':'register'}')">Создать сделку</button><button class=btn onclick="go('${u?'balance':'register'}')">Пополнить баланс</button><button class="btn" onclick="openDemoMode()">↗ Открыть демо-кабинет</button></div><p class="m" style="margin-top:18px;font-size:12px;letter-spacing:.08em;text-transform:uppercase">DEMO ENVIRONMENT · Тестовые данные · Без реальных платежей</p></div>
@@ -419,28 +442,45 @@ dashboard(){const u=me(),a=mine().filter(d=>!['completed','cancelled'].includes(
 return `<h1>Привет, ${esc(u.name)}</h1><div class=card><span class=m>Баланс</span><div class=big>${fmt(u.balance)}</div><div class="row mt"><button class="btn p" onclick="amtM('deposit')">Пополнить</button><button class=btn onclick="amtM('withdraw')">Вывести</button></div></div>
 <div class="row mt"><button class="btn p" onclick="go('new')">Создать сделку</button><button class=btn onclick="go('deals')">Мои сделки</button><button class=btn onclick="go('promo')">Промокод</button></div>
 <h2 style="margin-top:32px">Активные сделки</h2><div class=card>${dealTbl(a)}</div><h2 style="margin-top:32px">Последние операции</h2><div class=card>${txTbl(myTx().slice(0,5))}</div>`},
-new(){return `<h1>Новая сделка</h1><div class=card style="max-width:560px">${fld('ti','Название')}<label>Описание</label><textarea class=in id=ds rows=4></textarea><div class=er id=e-ds></div>${fld('am','Сумма, ₽','number','min=1')}<label>Ваша роль</label><div class=row><label style="margin:0"><input type=radio name=rl value=seller> Я продавец</label><label style="margin:0"><input type=radio name=rl value=buyer> Я покупатель</label></div><div class=er id=e-rl></div>${fld('dl','Срок (необязательно)','date')}<div class=row><button class="btn p" onclick=mkDeal()>Создать сделку</button><button class=btn onclick="go('dashboard')">Отмена</button></div></div>`},
+new(){return `<h1>Новая сделка</h1><div class=card style="max-width:560px">${fld('ti','Название')}<label>Описание</label><textarea class=in id=ds rows=4></textarea><div class=er id=e-ds></div><div class=row><div style="flex:1">${fld('am','Сумма','number','min=1')}</div><div><label>Валюта</label>${curSelect('cu')}</div></div><label>Ваша роль</label><div class=row><label style="margin:0"><input type=radio name=rl value=seller> Я продавец</label><label style="margin:0"><input type=radio name=rl value=buyer> Я покупатель</label></div><div class=er id=e-rl></div>${fld('dl','Срок (необязательно)','date')}<div class=row><button class="btn p" onclick=mkDeal()>Создать сделку</button><button class=btn onclick="go('dashboard')">Отмена</button></div></div>`},
 join(){const d=DB.deals.find(x=>x.id==R[1])||(DB.preview&&DB.preview.id==R[1]?DB.preview:null);if(!d)return PG.nf();const mineD=d.creatorId==DB.me;
-return `<h1>Приглашение в сделку</h1><div class=card style="max-width:560px"><h3>${esc(d.title)}</h3><p class=m>${esc(d.description)}</p><b>${fmt(d.amount)}</b> · ${badge(d.status)}<p class=m>Создатель: ${esc(usr(d.creatorId).name)} (${d.creatorRole=='seller'?'продавец':'покупатель'})</p>${mineD?'<p>Вы создатель этой сделки</p><button class=btn onclick="go(\'deal\',\''+(d.dealId||d.id)+'\')">Открыть сделку</button>':d.status!='awaiting_participant'?'<p class=m>К сделке уже присоединились.</p>':`<button class="btn p" onclick="joinD('${d.id}')">Присоединиться к сделке</button>`}</div>`},
+return `<h1>Приглашение в сделку</h1><div class=card style="max-width:560px"><h3>${esc(d.title)}</h3><p class=m>${esc(d.description)}</p><b>${fmt(d.amount,d.currency)}</b> · ${badge(d.status)}<p class=m>Создатель: ${esc(usr(d.creatorId).name)} (${d.creatorRole=='seller'?'продавец':'покупатель'})</p>${mineD?'<p>Вы создатель этой сделки</p><button class=btn onclick="go(\'deal\',\''+(d.dealId||d.id)+'\')">Открыть сделку</button>':d.status!='awaiting_participant'?'<p class=m>К сделке уже присоединились.</p>':`<button class="btn p" onclick="joinD('${d.id}')">Присоединиться к сделке</button>`}</div>`},
 deals(){return `<div class=row><h1 class=sp>Мои сделки</h1><button class="btn p" onclick="go('new')">Создать</button></div><div class="row" style="margin-bottom:16px"><input class=in style="max-width:260px" placeholder="Поиск по названию или ID" value="${esc(F.q)}" oninput="F.q=this.value;$('#ls').innerHTML=dl()"><select class=in style="max-width:220px" onchange="F.s=this.value;$('#ls').innerHTML=dl()"><option value="">Все статусы</option>${Object.keys(ST).map(k=>`<option value=${k} ${F.s==k?'selected':''}>${ST[k][0]}</option>`).join('')}</select></div><div class=card id=ls>${dl()}</div>`},
 deal(){const d=DB.deals.find(x=>x.id==R[1]),u=me();if(!d||![d.sellerId,d.buyerId,d.creatorId].includes(u.id))return PG.nf();
 const B=d.buyerId==u.id,S=d.sellerId==u.id,s=d.status,b=[],btn=(l,f,c='')=>`<button class="btn ${c}" onclick="${f}">${l}</button>`;
-if(B&&s=='awaiting_payment'){const low=u.balance<d.amount;b.push(`<button class="btn p" ${low?'disabled title="Недостаточно средств"':''} onclick="act('${d.id}','pay')">Оплатить с баланса</button>`+(low?`<span class=m>Недостаточно средств · <a onclick="amtM('deposit')">Пополнить</a></span>`:''))}
+if(B&&s=='awaiting_payment'){const low=balOf(u,d.currency)<d.amount;b.push(`<button class="btn p" ${low?'disabled title="Недостаточно средств"':''} onclick="act('${d.id}','pay')">Оплатить с баланса</button>`+(low?`<span class=m>Недостаточно средств (${d.currency}) · <a onclick="amtM('deposit')">Пополнить</a></span>`:''))}
 if(S&&s=='paid')b.push(btn('Начать выполнение',`act('${d.id}','start')`,'p'));
 if(S&&s=='in_progress')b.push(btn('Отметить выполнение',`act('${d.id}','done')`));
 if(B&&(s=='paid'||s=='in_progress'))b.push(btn('Подтвердить получение',`act('${d.id}','confirm')`,'p'));
 if((B||S)&&['awaiting_payment','paid','in_progress'].includes(s))b.push(btn('Отменить сделку',`act('${d.id}','cancel')`,'d'));
 if((B||S)&&['paid','in_progress'].includes(s))b.push(btn('Открыть спор',`act('${d.id}','dispute')`,'d'));
 const link=location.href.split('#')[0]+'#join-'+(d.invite||d.id);
-return `<p class=m><a onclick="go('deals')">← Сделки</a></p><div class=row><h1 class=sp>${esc(d.title)}</h1>${badge(s)}</div><div class=grid><div class=card><span class=m>${d.short||d.id}</span><p>${esc(d.description)}</p><div class=big>${fmt(d.amount)}</div><p class=m>Комиссия сервиса ${DB.fee}% (${fmt(Math.round(d.amount*DB.fee)/100)}) удерживается при выплате продавцу.</p><p class=m>Продавец: ${nm(d.sellerId)}<br>Покупатель: ${nm(d.buyerId)}<br>Срок: ${d.deadline||'не указан'}</p></div><div class=card><h3>Действия</h3>${s=='dispute'?'<div class="card un">Спор открыт, ожидает решения</div>':''}<div class=row>${b.join('')||'<span class=m>Нет доступных действий</span>'}</div>${s=='awaiting_participant'?`<p class=m style="margin-top:16px">Ссылка-приглашение:</p><input class=in readonly value="${esc(link)}"><button class="btn p mt" onclick="cp('${link}')">Скопировать ссылку</button>${d.creatorId==u.id?`<button class="btn d mt" style="margin-left:8px" onclick="rmDeal('${d.id}')">Удалить</button>`:''}`:''}</div></div>${(B||S)&&d.sellerId&&d.buyerId?chatBox(d):''}${(B||S)?revBox(d):''}<h2 style="margin-top:32px">История</h2><div class=tl>${d.history.map(h=>`<div><b>${esc(h.message)}</b><br><span class=m>${dt(h.at)} · ${esc((usr(h.actorId)||{name:'Администратор'}).name)}</span></div>`).join('')}</div>`},
-balance(){const u=me(),l=myTx().filter(t=>!F.t||t.type==F.t);return `<h1>Баланс</h1><div class=card><div class=big>${fmt(u.balance)}</div><div class="row mt"><button class="btn p" onclick="amtM('deposit')">Пополнить</button><button class=btn onclick="amtM('withdraw')">Вывести</button></div></div><h2 style="margin-top:24px">Заявки на пополнение и вывод</h2><div class=card>${reqTbl()}</div><div class=row style="margin:24px 0 12px"><h2 class=sp style="margin:0">История операций</h2><select class=in style="max-width:220px" onchange="F.t=this.value;render()"><option value="">Все типы</option>${Object.keys(TT).map(k=>`<option value=${k} ${F.t==k?'selected':''}>${TT[k]}</option>`).join('')}</select></div><div class=card>${txTbl(l)}</div>`},
+return `<p class=m><a onclick="go('deals')">← Сделки</a></p><div class=row><h1 class=sp>${esc(d.title)}</h1>${badge(s)}</div><div class=grid><div class=card><span class=m>${d.short||d.id}</span><p>${esc(d.description)}</p><div class=big>${fmt(d.amount,d.currency)}</div><p class=m>Комиссия сервиса ${DB.fee}% (${fmt(Math.round(d.amount*DB.fee)/100,d.currency)}) удерживается при выплате продавцу.</p><p class=m>Продавец: ${nm(d.sellerId)}<br>Покупатель: ${nm(d.buyerId)}<br>Срок: ${d.deadline||'не указан'}</p></div><div class=card><h3>Действия</h3>${s=='dispute'?'<div class="card un">Спор открыт, ожидает решения</div>':''}<div class=row>${b.join('')||'<span class=m>Нет доступных действий</span>'}</div>${s=='awaiting_participant'?`<p class=m style="margin-top:16px">Ссылка-приглашение:</p><input class=in readonly value="${esc(link)}"><button class="btn p mt" onclick="cp('${link}')">Скопировать ссылку</button>${d.creatorId==u.id?`<button class="btn d mt" style="margin-left:8px" onclick="rmDeal('${d.id}')">Удалить</button>`:''}`:''}</div></div>${(B||S)&&d.sellerId&&d.buyerId?chatBox(d):''}${(B||S)?revBox(d):''}<h2 style="margin-top:32px">История</h2><div class=tl>${d.history.map(h=>`<div><b>${esc(h.message)}</b><br><span class=m>${dt(h.at)} · ${esc((usr(h.actorId)||{name:'Администратор'}).name)}</span></div>`).join('')}</div>`},
+balance(){const u=me(),l=myTx().filter(t=>!F.t||t.type==F.t),bals=(u.balances&&u.balances.length?u.balances:[{currency:'RUB',amount:u.balance||0}]);return `<h1>Баланс</h1><div class=card><div class=grid>${bals.map(b=>`<div><span class=m>${b.currency}</span><div class=big>${fmt(b.amount,b.currency)}</div></div>`).join('')}</div><div class="row mt"><button class="btn p" onclick="amtM('deposit')">Пополнить</button><button class=btn onclick="amtM('withdraw')">Вывести</button></div></div><h2 style="margin-top:24px">Заявки на пополнение и вывод</h2><div class=card>${reqTbl()}</div><div class=row style="margin:24px 0 12px"><h2 class=sp style="margin:0">История операций</h2><select class=in style="max-width:220px" onchange="F.t=this.value;render()"><option value="">Все типы</option>${Object.keys(TT).map(k=>`<option value=${k} ${F.t==k?'selected':''}>${TT[k]}</option>`).join('')}</select></div><div class=card>${txTbl(l)}</div>`},
 promo(){const u=me();return `<h1>Промокоды</h1><div class=card style="max-width:460px">${fld('pc','Промокод')}<button class="btn p" onclick=doPromo()>Активировать</button></div><h2 style="margin-top:32px">Активированные</h2>${u.usedPromoCodes.length?u.usedPromoCodes.map(c=>`<span class=badge style="color:#0EA5A4;margin-right:8px">${c}</span>`).join(''):'<p class=m>Пока нет.</p>'}`},
 notifs(){const l=DB.notes.filter(n=>n.userId==DB.me).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));return `<div class=row><h1 class=sp>Уведомления</h1><button class=btn onclick="readAll()">Отметить все прочитанными</button></div>${l.length?l.map(n=>`<div class="card ${n.read?'':'un'}" style="margin-bottom:10px;cursor:pointer" onclick="rd('${n.id}')"><b>${esc(n.title)}</b><br>${esc(n.body)}<br><span class=m>${dt(n.createdAt)}</span></div>`).join(''):'<p class=m>Уведомлений нет.</p>'}`},
 profile(){const u=me();return `<h1>Профиль</h1><div class=card style="max-width:460px"><div class=row><span class=av style="width:56px;height:56px">${av(u)}</span><div><b>${esc(u.name)}</b><br><span class=m>${esc(u.email)} · с ${dt(u.createdAt)}</span></div></div>${fld('nm','Имя','text','value="'+esc(u.name)+'"')}${fld('au','URL аватара','text','value="'+esc(u.avatarUrl||'')+'"')}<div class=row><button class="btn p" onclick=saveProf()>Сохранить</button><button class="btn d" onclick="ask('Выйти из аккаунта?',logout)">Выйти</button></div></div>`},
 rules(){const Q=[['Как работает гарантия?','Покупатель вносит оплату на баланс сервиса, деньги замораживаются и не поступают продавцу, пока покупатель не подтвердит получение.'],['Когда продавец получает деньги?','После нажатия «Подтвердить получение». Из суммы удерживается комиссия сервиса, её размер указан в карточке сделки.'],['Что если покупатель не получил товар или услугу?','Сделку можно отменить, деньги вернутся покупателю. Если стороны не договорились, любая из них может открыть спор.'],['Как решается спор?','Администратор изучает переписку в чате сделки и решает: вернуть деньги покупателю или выплатить продавцу. Решение окончательное.'],['Можно ли отменить сделку?','Да, до завершения. Если деньги уже были оплачены, они возвращаются покупателю полностью.'],['Как пополнить баланс и вывести деньги?','Создайте заявку на пополнение, переведите сумму по реквизитам с кодом платежа и нажмите «Я оплатил»: после проверки администратором баланс пополнится. Для вывода создайте заявку с реквизитами, сумма сразу списывается, выплата выполняется вручную.'],['Что делать, если забыл пароль?','Обратитесь к администратору сервиса, он поможет восстановить доступ.']];
 return `<h1>Правила и FAQ</h1>${Q.map(q=>`<div class=card style="margin-bottom:12px"><h3>${q[0]}</h3><span class=m>${q[1]}</span></div>`).join('')}`},
-admin(){if(!me())return `<div class=hero><h1>Админ-панель</h1><p>Войдите в аккаунт.</p></div>`;return `<h1>Админ-панель (демо)</h1><p class=m>Здесь вы выступаете в роли администратора сервиса и решаете споры между сторонами.</p><div id=ad>Загрузка…</div>`},
+admin(){if(!me())return `<div class=hero><h1>Админ-панель</h1><p>Войдите в аккаунт.</p></div>`;if(!isAdmin())return `<div class=hero><h1>Доступ ограничен</h1><p>Эта страница только для администратора сервиса.</p></div>`;return `<h1>Админ-панель</h1><p class=m>Здесь вы выступаете в роли администратора сервиса и решаете споры между сторонами.</p><div id=ad>Загрузка…</div>`},
+support(){const u=me();return `<h1>Поддержка</h1><div class=card style="max-width:560px">
+${fld('sn','Имя','text',u?('value="'+esc(u.name)+'"'):'')}
+${fld('se','Email','email',u?('value="'+esc(u.email)+'"'):'')}
+${fld('ss','Тема обращения')}
+<label>Сообщение</label><textarea class=in id=sm rows=5></textarea><div class=er id=e-sm></div>
+<input type=text id=hp name=website autocomplete=off tabindex=-1 style="position:absolute;left:-9999px;opacity:0" value="">
+<button class="btn p mt" onclick=sendSupport()>Отправить</button>
+</div>
+<h2 style="margin-top:32px">Частые вопросы</h2>
+${SUPPORT_FAQ.map(q=>`<div class=card style="margin-bottom:12px"><h3>${q[0]}</h3><span class=m>${q[1]}</span></div>`).join('')}`},
 nf(){return `<div class=hero><h1>404</h1><p>Страница не найдена.</p><button class="btn p" onclick="go('home')">На главную</button></div>`}};
+const SUPPORT_FAQ=[
+['Как быстро вы отвечаете?','Обычно в течение суток. Ответ придёт на указанный вами email.'],
+['Деньги списались, но сделка не отображается','Напишите номер сделки (если есть) и email аккаунта — проверим вручную.'],
+['Как отменить сделку или открыть спор?','Откройте сделку на странице «Мои сделки» — там есть кнопки «Отменить» и «Открыть спор», если это доступно на текущем статусе.'],
+['Не пришло письмо с подтверждением email','Проверьте папку «Спам», подождите пару минут, затем на странице входа используйте кнопку повторной отправки письма.'],
+['Забыл пароль','Напишите нам в поддержку с email аккаунта — поможем восстановить доступ.']
+];
 const RS={pending:['Ждёт оплаты','#D97706'],review:['Проверяется','#2563EB'],processing:['В обработке','#2563EB'],done:['Выполнено','#16A34A'],rejected:['Отклонено','#DC2626']};
 const reqTbl=()=>{const l=(DB.requests||[]).slice().sort((a,b)=>b.createdAt.localeCompare(a.createdAt));return l.length?`<div class=tw><table><tr><th>Дата</th><th>Заявка</th><th>Сумма</th><th>Статус</th><th></th></tr>${l.map(r=>`<tr><td>${dt(r.createdAt)}</td><td>${r.type=='deposit'?'Пополнение':'Вывод'} ${r.short||r.id}</td><td>${fmt(r.amount)}</td><td><span class=badge style="color:${RS[r.status][1]}">${RS[r.status][0]}</span></td><td>${r.type=='deposit'&&r.status=='pending'?`<button class="btn p" onclick="payM('${r.id}')">Оплатить</button>`:''}</td></tr>`).join('')}</table></div>`:'<p class=m>Заявок пока нет.</p>'};
 const nm=id=>{const x=id&&usr(id);return x?esc(x.name)+(x.rating?' ★ '+x.rating.avg+' ('+x.rating.n+')':''):'—'};
@@ -449,6 +489,14 @@ const revBox=d=>{if(d.status!='completed')return '';const mine=(d.reviews||[]).f
 return `<h2 style="margin-top:32px">Отзывы</h2><div class=card>${list||'<p class=m>Отзывов пока нет.</p>'}${mine?'':`<label>Оценка второй стороне</label><select class=in id=rt><option value=5>5 ★</option><option value=4>4 ★</option><option value=3>3 ★</option><option value=2>2 ★</option><option value=1>1 ★</option></select><label>Комментарий</label><input class=in id=rx maxlength=300><div class=er id=e-rx></div><button class="btn p mt" onclick="sendRev('${d.id}')">Оставить отзыв</button>`}</div>`};
 const dl=()=>dealTbl(mine().filter(d=>(!F.s||d.status==F.s)&&(!F.q||(d.title+d.id+(d.short||'')).toLowerCase().includes(F.q.toLowerCase()))));
 
+let LAST_REG_EMAIL='';
+const ADMIN_EMAIL='mm7g7s@gmail.com';
+const isAdmin=()=>{const u=me();return !!(u&&u.email&&u.email.toLowerCase()===ADMIN_EMAIL.toLowerCase())};
+async function resendConfirm(email){
+const {error}=await garantSupabase.auth.resend({type:'signup',email});
+if(error){toast(error.message||'Не удалось отправить письмо',1);return}
+toast('Письмо отправлено повторно');
+}
 async function doReg(){
   document.querySelectorAll('.er').forEach(e=>e.textContent='');
   const name=val('nm'), email=val('em'), password=$('#pw').value;
@@ -456,26 +504,34 @@ async function doReg(){
   const {data,error}=await garantSupabase.auth.signUp({email,password,options:{data:{name}}});
   if(error){toast(error.message||'Не удалось зарегистрироваться',1);return}
   if(data.session){toast('Аккаунт создан! Теперь можно войти.');go('login')}
-  else {modal('<h3>Почти готово!</h3><p>Мы отправили письмо для подтверждения email. Открой почту, подтверди адрес, затем вернись и войди.</p><button class="btn p" style="width:100%" onclick="closeM();go(\'login\')">Перейти ко входу</button>')}
+  else {LAST_REG_EMAIL=email;modal('<h3>Почти готово!</h3><p>Мы отправили письмо для подтверждения email на <b>'+esc(email)+'</b>. Открой почту, перейди по ссылке, затем вернись и войди.</p><div class=row style="margin-top:14px"><button class="btn p" onclick="closeM();go(\'login\')">Перейти ко входу</button><button class=btn onclick="resendConfirm(LAST_REG_EMAIL)">Отправить письмо ещё раз</button></div>')}
 }
 async function doLogin(){
   document.querySelectorAll('.er').forEach(e=>e.textContent='');
   const email=val('em'), password=$('#pw').value;
   if(!email){err('em','Введите email');return} if(!password){err('pw','Введите пароль');return}
   const {data,error}=await garantSupabase.auth.signInWithPassword({email,password});
-  if(error){toast(error.message||'Не удалось войти',1);return}
+  if(error){
+   const unconfirmed=/confirm/i.test(error.message||'')||error.code==='email_not_confirmed';
+   if(unconfirmed){LAST_REG_EMAIL=email;modal('<h3>Email ещё не подтверждён</h3><p>Проверьте почту <b>'+esc(email)+'</b> и перейдите по ссылке из письма, затем войдите снова.</p><div class=row style="margin-top:14px"><button class=btn onclick=closeM()>Понятно</button><button class="btn p" onclick="resendConfirm(LAST_REG_EMAIL)">Отправить письмо ещё раз</button></div>')}
+   else toast(error.message||'Не удалось войти',1);
+   return
+  }
   await enter('sb','Вход выполнен')
 }
 async function enter(t,m){TOK=t;try{localStorage.setItem('tok',t)}catch(e){}await sync();toast(m);after()}
 function after(){const p=PEND;PEND=null;H=[];p?go(...p):go('dashboard')}
 async function logout(){await api('POST','/logout',{});TOK=null;try{localStorage.removeItem('tok')}catch(e){}DB={users:[],deals:[],tx:[],notes:[],me:null};H=[];R=['home'];render()}
-function amtM(k){modal(k=='deposit'?`<h3>Пополнение баланса</h3>${fld('ma','Сумма, ₽ (от 100)','number','min=100')}<p class=m>Далее вы получите реквизиты для оплаты.</p><div class=row style="justify-content:flex-end"><button class=btn onclick=closeM()>Отмена</button><button class="btn p" onclick="doAmt('deposit')">Продолжить</button></div>`:`<h3>Вывод средств</h3><p class=m>Доступно: ${fmt(me().balance)}</p>${fld('ma','Сумма, ₽','number','min=1')}${fld('rq','Реквизиты: номер карты или телефон (СБП) и банк')}<div class=row style="justify-content:flex-end"><button class=btn onclick=closeM()>Отмена</button><button class="btn p" onclick="doAmt('withdraw')">Вывести</button></div>`)}
-async function doAmt(k){const j=await api('POST','/'+k,{amount:$('#ma').value,requisites:k=='withdraw'?val('rq'):undefined});if(!j)return;await sync();render();
-k=='deposit'?payM(j.id):modal(`<h3>Заявка на вывод принята</h3><p>Вывод ${fmt(j.amount)} осуществляется в течение часа на реквизиты:<br><b>${esc(j.requisites)}</b></p><p class=m>Статус заявки виден на странице «Баланс».</p><button class="btn p" onclick=closeM()>Понятно</button>`)}
-function payM(id){const r=DB.requests.find(x=>x.id==id);modal(`<h3>Оплатите ${fmt(r.amount)}</h3>${DB.demo?'<div class="card un">Карта: <b>4242 4242 4242 4242</b>, 12/30, CVC 123</div>':`<p class=m>Реквизиты для перевода:</p><div class=card style="white-space:pre-wrap">${esc(DB.payDetails)}</div><p class=m>В комментарии к переводу укажите код <b>${r.code}</b>. После оплаты нажмите «Я оплатил». Зачисление после проверки, обычно в течение часа.</p>`}<div class=row style="justify-content:flex-end"><button class=btn onclick=closeM()>Позже</button><button class="btn p" onclick="paidD('${r.id}')">Я оплатил</button></div>`)}
-async function paidD(id){const j=await api('POST','/deposit/'+id+'/paid',{});if(j){closeM();toast(j.msg);await sync();render()}}
+function amtM(k){modal(k=='deposit'?`<h3>Пополнение баланса</h3><div class=row><div style="flex:1">${fld('ma','Сумма (от 100)','number','min=100')}</div><div><label>Валюта</label>${curSelect('cu')}</div></div><div class=row style="justify-content:flex-end;margin-top:14px"><button class=btn onclick=closeM()>Отмена</button><button class="btn p" onclick="doAmt('deposit')">Отправить заявку</button></div>`:`<h3>Вывод средств</h3><p class=m id=wav>Доступно: ${fmt(balOf(me(),'RUB'))}</p><div class=row><div style="flex:1">${fld('ma','Сумма','number','min=1')}</div><div><label>Валюта</label>${curSelect('cu')}</div></div><label>Банк</label><select class=in id=wb><option>Сбербанк</option><option>Т-Банк</option><option>ВТБ</option><option>Альфа-Банк</option><option>Газпромбанк</option><option>Райффайзен Банк</option><option>Озон Банк</option><option>Другой банк</option></select><div id=wbo style="display:none;margin-top:10px">${fld('wbn','Название банка')}</div>${fld('rq','Номер карты или телефон (СБП)')}<div class=row style="justify-content:flex-end;margin-top:14px"><button class=btn onclick=closeM()>Отмена</button><button class="btn p" onclick="doAmt('withdraw')">Вывести</button></div>`);const s=$('#wb');if(s)s.onchange=()=>{$('#wbo').style.display=s.value=='Другой банк'?'block':'none'};const cs=$('#cu');if(cs&&k=='withdraw'){const upd=()=>{$('#wav').textContent='Доступно: '+fmt(balOf(me(),cs.value),cs.value)};cs.onchange=upd;upd()}}
+async function doAmt(k){let req;
+if(k=='withdraw'){const bk=val('wb'),bn=bk=='Другой банк'?val('wbn'):bk;req={amount:$('#ma').value,requisites:(bn?('Банк: '+bn+' · '):'')+val('rq'),currency:val('cu')}}
+else req={amount:$('#ma').value,currency:val('cu')};
+const j=await api('POST','/'+k,req);if(!j)return;await sync();render();
+closeM();
+k=='deposit'?modal(`<h3>Заявка на пополнение отправлена</h3><p>Для пополнения баланса напишите нам в Telegram: <b>@tonuky</b>.</p><p class=m>Статус заявки виден на странице «Баланс».</p><button class="btn p" onclick=closeM()>Понятно</button>`)
+:modal(`<h3>Заявка на вывод принята</h3><p>Вывод ${fmt(j.amount,j.currency)} осуществляется в течение часа на реквизиты:<br><b>${esc(j.requisites)}</b></p><p class=m>Статус заявки виден на странице «Баланс».</p><button class="btn p" onclick=closeM()>Понятно</button>`)}
 async function doPromo(){const j=await api('POST','/promo',{code:val('pc')});if(j){toast(j.msg);await sync();render()}}
-async function mkDeal(){const r=document.querySelector('[name=rl]:checked'),j=await api('POST','/deals',{title:val('ti'),description:$('#ds').value,amount:$('#am').value,role:r&&r.value,deadline:val('dl')});if(j){toast(j.msg);await sync();go('deal',j.id)}}
+async function mkDeal(){const r=document.querySelector('[name=rl]:checked'),j=await api('POST','/deals',{title:val('ti'),description:$('#ds').value,amount:$('#am').value,role:r&&r.value,deadline:val('dl'),currency:val('cu')});if(j){toast(j.msg);await sync();go('deal',j.id)}}
 async function joinD(id){const j=await api('POST','/deals/'+id+'/join',{});if(j){toast(j.msg);await sync();go('deal',j.dealId||id)}}
 function rmDeal(id){ask('Удалить сделку?',async()=>{const j=await api('DELETE','/deals/'+id);if(j){toast('Сделка удалена');await sync();go('deals')}})}
 function act(id,a){const q={cancel:'Отменить сделку?',dispute:'Открыть спор?',confirm:'Подтвердить получение? Деньги уйдут продавцу.'}[a];
@@ -486,13 +542,23 @@ async function readAll(){await api('POST','/notes/read-all',{});toast('Все п
 async function saveProf(){const j=await api('POST','/profile',{name:val('nm'),avatarUrl:val('au')});if(j){toast('Профиль сохранён');await sync();render()}}
 async function sendMsg(id){const j=await api('POST','/deals/'+id+'/msg',{text:val('cm')});if(j){await sync();render()}}
 async function sendRev(id){const j=await api('POST','/deals/'+id+'/review',{rating:$('#rt').value,text:val('rx')});if(j){toast(j.msg);await sync();render()}}
+async function sendSupport(){
+if(val('hp')){toast('Заявка отправлена! Мы ответим в течение суток.');return}
+const last=+(localStorage.getItem('support_last_sent')||0);if(Date.now()-last<20000){toast('Подождите немного перед повторной отправкой',1);return}
+const j=await api('POST','/support',{name:val('sn'),email:val('se'),subject:val('ss'),message:$('#sm').value});
+if(j){localStorage.setItem('support_last_sent',String(Date.now()));toast(j.msg);$('#sm').value='';$('#ss').value=''}
+}
 async function loadAdmin(){
-const rq=await api('POST','/admin/requests',{key:'demo'}),ds=await api('POST','/admin/disputes',{key:'demo'});if(!$('#ad'))return;
+if(!isAdmin())return;
+const rq=await api('POST','/admin/requests',{key:'demo'}),ds=await api('POST','/admin/disputes',{key:'demo'}),pl=await api('POST','/admin/promo/list',{key:'demo'});if(!$('#ad'))return;
 const rh=(rq&&rq.length)?rq.map(r=>`<div class=card style="margin-bottom:10px"><b>${r.type=='deposit'?'Пополнение':'Вывод'} · ${fmt(r.amount)} · ${RS[r.status][0]}</b><br>${esc(r.name)} · ${esc(r.email)}<br><div class=m>${r.type=='deposit'?'Код платежа: '+esc(r.code||''):'Реквизиты: '+esc(r.requisites||'')}</div><div class="row mt"><button class="btn p" onclick="handleReq('${r.id}','approve')">${r.type=='deposit'?'Зачислить':'Выплачено'}</button><button class=btn onclick="handleReq('${r.id}','reject')">Отклонить</button></div></div>`).join(''):'<p class=m>Заявок нет.</p>';
 const dh=(ds&&ds.length)?ds.map(x=>`<div class=card style="margin-bottom:10px"><b>${x.short||x.id} · ${esc(x.title)} · ${fmt(x.amount)}</b><br>Продавец: ${esc(x.seller)} · Покупатель: ${esc(x.buyer)}<br><div class=m>${x.chat.map(esc).join('<br>')}</div><div class="row mt"><button class="btn p" onclick="resolveDispute('${x.id}','release')">Выплатить продавцу</button><button class=btn onclick="resolveDispute('${x.id}','refund')">Вернуть покупателю</button></div></div>`).join(''):'<p class=m>Открытых споров нет.</p>';
-$('#ad').innerHTML='<h2>Заявки на пополнение и вывод</h2>'+rh+'<h2 style="margin-top:24px">Споры</h2>'+dh}
-function handleReq(id,a){ask(a=='approve'?'Подтвердить заявку?':'Отклонить заявку?',async()=>{const j=await api('POST','/admin/request',{key:'demo',id,action:a});if(j){toast('Готово');await sync();go('admin')}})}
-function resolveDispute(id,a){ask('Решение окончательное. Продолжить?',async()=>{const j=await api('POST','/admin/resolve',{key:'demo',id,action:a});if(j){toast('Спор решён');await sync();go('admin')}})}
+const ph=(pl&&pl.length)?`<div class=tw><table><tr><th>Код</th><th>Сумма</th><th>Статус</th><th></th></tr>${pl.map(p=>`<tr><td>${esc(p.code)}</td><td>${fmt(p.amount)}</td><td>${p.active?'Активен':'Выключен'}</td><td><button class=btn onclick="togglePromo('${esc(p.code)}',${!p.active})">${p.active?'Выключить':'Включить'}</button></td></tr>`).join('')}</table></div>`:'<p class=m>Промокодов пока нет.</p>';
+$('#ad').innerHTML='<h2>Промокоды</h2><div class=card>'+ph+`<div class="row mt">${fld('pcd','Новый код')}${fld('pam','Сумма, ₽','number','min=1')}</div><button class="btn p mt" onclick=createPromo()>Создать промокод</button></div><h2 style="margin-top:24px">Заявки на пополнение и вывод</h2>`+rh+'<h2 style="margin-top:24px">Споры</h2>'+dh}
+async function createPromo(){const j=await api('POST','/admin/promo/create',{key:'demo',code:val('pcd'),amount:val('pam')});if(j){toast('Промокод создан');await loadAdmin()}}
+async function togglePromo(code,active){const j=await api('POST','/admin/promo/toggle',{key:'demo',code,active});if(j){toast(active?'Код включён':'Код выключен');await loadAdmin()}}
+function handleReq(id,a){if(!isAdmin())return;ask(a=='approve'?'Подтвердить заявку?':'Отклонить заявку?',async()=>{const j=await api('POST','/admin/request',{key:'demo',id,action:a});if(j){toast('Готово');await sync();go('admin')}})}
+function resolveDispute(id,a){if(!isAdmin())return;ask('Решение окончательное. Продолжить?',async()=>{const j=await api('POST','/admin/resolve',{key:'demo',id,action:a});if(j){toast('Спор решён');await sync();go('admin')}})}
 setInterval(async()=>{if(!TOK||$('#modal').innerHTML||document.activeElement&&document.activeElement.matches('input,textarea,select'))return;const o=JSON.stringify(DB);await sync();if(JSON.stringify(DB)!=o)render()},5000);
 (async()=>{await sync();if(location.hash.startsWith('#join-')){PEND=['join',location.hash.slice(6)];if(me())return after()}render()})();
 </script></body></html>
